@@ -10,7 +10,8 @@
  Notes:          This migration intentionally creates only extensions and ENUM
                  types. It is idempotent and safe to run multiple times. This
                  revision adds the public.users, public.referral_posts, public.comments,
-                 and public.likes tables (synchronized from auth and application sources respectively).
+                 public.likes, and public.referral_requests tables (synchronized from
+                 auth and application sources respectively).
 ********************************************************************************/
 
 -- =========================
@@ -391,6 +392,79 @@ COMMENT ON COLUMN public.likes.user_id IS
 
 COMMENT ON COLUMN public.likes.created_at IS
   'Creation timestamp (UTC) for the like record. Defaults to now().' ;
+
+
+-- =============================================================================
+-- TABLE: public.referral_requests
+-- Purpose: Tracks requests from job seekers (requester) to employees (referrer)
+--          to provide a referral for a specific referral_post. The table
+--          contains optional message/resume metadata and a status using the
+--          referral_status ENUM. Enforces uniqueness to prevent duplicate
+--          requests for the same post by the same requester.
+-- Idempotency: created only if the table does not already exist.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public.referral_requests (
+  -- Primary identifier for the referral request.
+  id UUID PRIMARY KEY,
+
+  -- The post that the requester is asking to be referred to.
+  post_id UUID NOT NULL REFERENCES public.referral_posts(id) ON DELETE CASCADE,
+
+  -- The user requesting the referral (job seeker).
+  requester_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+
+  -- The internal employee expected to provide the referral.
+  employee_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+
+  -- Current status of the referral request. Default to 'Pending' at creation.
+  status public.referral_status NOT NULL DEFAULT 'Pending',
+
+  -- Message from the requester to the employee; required and non-empty.
+  message TEXT NOT NULL CHECK (char_length(message) > 0),
+
+  -- URL to the requester's resume (HTTP/HTTPS expected).
+  resume_url TEXT NOT NULL CHECK (resume_url ~* '^https?://'),
+
+  -- Auditing timestamps
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  -- Prevent duplicate requests for the same post by the same requester.
+  CONSTRAINT referral_requests_post_requester_unique UNIQUE (post_id, requester_id)
+);
+
+-- -----------------------------------------------------------------------------
+-- Column-level comments for public.referral_requests
+-- -----------------------------------------------------------------------------
+COMMENT ON TABLE public.referral_requests IS
+  'Referral requests created by job seekers asking employees to refer them for a referral_post.';
+
+COMMENT ON COLUMN public.referral_requests.id IS
+  'Primary key (UUID) for the referral request record.';
+
+COMMENT ON COLUMN public.referral_requests.post_id IS
+  'Foreign key to public.referral_posts(id). The post the requester is applying for.';
+
+COMMENT ON COLUMN public.referral_requests.requester_id IS
+  'Foreign key to public.users(id). The user who requested the referral (job seeker).';
+
+COMMENT ON COLUMN public.referral_requests.employee_id IS
+  'Foreign key to public.users(id). The employee intended to provide the referral.';
+
+COMMENT ON COLUMN public.referral_requests.status IS
+  'Lifecycle status of the referral request. Type: referral_status ENUM. Default: Pending.';
+
+COMMENT ON COLUMN public.referral_requests.message IS
+  'Message from the requester to the employee explaining interest and fit; non-empty.';
+
+COMMENT ON COLUMN public.referral_requests.resume_url IS
+  'HTTP(S) URL to the requester\'s resume or CV.';
+
+COMMENT ON COLUMN public.referral_requests.created_at IS
+  'Timestamp when the referral request was created (UTC). Default: now().' ;
+
+COMMENT ON COLUMN public.referral_requests.updated_at IS
+  'Timestamp when the referral request was last updated (UTC). Application should update on status changes.';
 
 
 -- End of migration V1.0.0__initial_schema.sql
