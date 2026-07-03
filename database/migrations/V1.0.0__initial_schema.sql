@@ -9,7 +9,8 @@
  Created:        <CREATED_DATE_PLACEHOLDER>
  Notes:          This migration intentionally creates only extensions and ENUM
                  types. It is idempotent and safe to run multiple times. This
-                 revision adds the public.users table (synchronized from auth.users).
+                 revision adds the public.users, public.referral_posts, public.comments,
+                 and public.likes tables (synchronized from auth and application sources respectively).
 ********************************************************************************/
 
 -- =========================
@@ -182,6 +183,172 @@ COMMENT ON COLUMN public.users.updated_at IS
 
 
 -- =============================================================================
+-- TABLE: public.referral_posts
+-- Purpose: Stores referral opportunities posted by employees. These records are
+--          authored by users and reference public.users(id). The table captures
+--          job metadata, application links, location, work mode, and a search
+--          vector for full-text search. Created idempotently.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public.referral_posts (
+  -- Primary key for the referral post. UUID to align with distributed ID strategy.
+  id UUID PRIMARY KEY,
+
+  -- Reference to the posting user (author). Cascades on user deletion to keep
+  -- data consistent with application-level expectations.
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+
+  -- Employer / company information
+  company_name VARCHAR(255) NOT NULL,
+  company_url TEXT NOT NULL CHECK (company_url ~* '^https?://'),
+
+  -- Optional external job identifier provided by the company or ATS.
+  job_id VARCHAR(128) NOT NULL CHECK (char_length(job_id) > 0),
+
+  -- Role/title being referred to (e.g., Software Engineer II).
+  role VARCHAR(150) NOT NULL,
+
+  -- Comma- or space-separated skills or structured JSON-as-text. Kept as TEXT
+  -- to allow flexible representations but required for searchability.
+  key_skills TEXT NOT NULL CHECK (char_length(key_skills) > 0),
+
+  -- Full job description / responsibilities / qualifications.
+  job_description TEXT NOT NULL CHECK (char_length(job_description) > 0),
+
+  -- Contact email of the internal employee posting the referral.
+  employee_email VARCHAR(255) NOT NULL CHECK (employee_email ~* '^[^@\s]+@[^@\s]+\.[^@\s]+$'),
+
+  -- Canonical URL where applicants can apply for the role.
+  job_apply_url TEXT NOT NULL CHECK (job_apply_url ~* '^https?://'),
+
+  -- Location details
+  location VARCHAR(150) NOT NULL,
+  country VARCHAR(100) NOT NULL,
+
+  -- Work mode (e.g., remote, onsite, hybrid). Kept as VARCHAR to allow
+  -- future extensibility; enforce non-empty value here.
+  work_mode VARCHAR(50) NOT NULL CHECK (char_length(work_mode) > 0),
+
+  -- Status of the post (uses post_status ENUM defined earlier).
+  status public.post_status NOT NULL DEFAULT 'active',
+
+  -- Pre-populated tsvector for full-text search. Default empty vector to
+  -- maintain NOT NULL requirement; application is expected to maintain its
+  -- semantics (recompute on updates if desired).
+  search_vector tsvector NOT NULL DEFAULT to_tsvector('english', ''),
+
+  -- Auditing timestamps
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------------------------
+-- Column-level comments for public.referral_posts
+-- -----------------------------------------------------------------------------
+COMMENT ON TABLE public.referral_posts IS
+  'Referral opportunities posted by users. Contains job metadata, application links, and search vector.';
+
+COMMENT ON COLUMN public.referral_posts.id IS
+  'Primary key (UUID) for the referral post.';
+
+COMMENT ON COLUMN public.referral_posts.user_id IS
+  'Foreign key to public.users(id). The user who created the referral post.';
+
+COMMENT ON COLUMN public.referral_posts.company_name IS
+  'Official company name for the referral opportunity.';
+
+COMMENT ON COLUMN public.referral_posts.company_url IS
+  'Public URL for the company; must be an HTTP(S) URI.';
+
+COMMENT ON COLUMN public.referral_posts.job_id IS
+  'Vendor or internal job identifier. Useful for deduplication with ATS feeds.';
+
+COMMENT ON COLUMN public.referral_posts.role IS
+  'Job title or role name for the referral.';
+
+COMMENT ON COLUMN public.referral_posts.key_skills IS
+  'Skills or keywords relevant to the role; free-text for flexibility.';
+
+COMMENT ON COLUMN public.referral_posts.job_description IS
+  'Full job description text used for display and search.';
+
+COMMENT ON COLUMN public.referral_posts.employee_email IS
+  'Email address of the posting employee; used as contact metadata.';
+
+COMMENT ON COLUMN public.referral_posts.job_apply_url IS
+  'Canonical application URL where candidates can apply; must be HTTP(S).';
+
+COMMENT ON COLUMN public.referral_posts.location IS
+  'Human-readable location string (city, state/province) for the role.';
+
+COMMENT ON COLUMN public.referral_posts.country IS
+  'ISO country name or code for the role location.';
+
+COMMENT ON COLUMN public.referral_posts.work_mode IS
+  'Work mode such as remote, onsite, or hybrid.';
+
+COMMENT ON COLUMN public.referral_posts.status IS
+  'Post lifecycle status. Type: post_status ENUM. Default: active.';
+
+COMMENT ON COLUMN public.referral_posts.search_vector IS
+  'TSVECTOR used for full-text search over job_description, company_name, role, and key_skills.';
+
+COMMENT ON COLUMN public.referral_posts.created_at IS
+  'Record creation timestamp (UTC). Default: now().' ;
+
+COMMENT ON COLUMN public.referral_posts.updated_at IS
+  'Record last-updated timestamp (UTC). Application should update this when the post changes.';
+
+
+-- =============================================================================
+-- TABLE: public.comments
+-- Purpose: Stores user comments on referral posts. Each comment is associated
+--          with a referral_post and authored by a user. Cascade deletes are in
+--          place to remove comments if the parent post or user is deleted.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public.comments (
+  -- Primary identifier for the comment.
+  id UUID PRIMARY KEY,
+
+  -- Reference to the referral post this comment belongs to.
+  post_id UUID NOT NULL REFERENCES public.referral_posts(id) ON DELETE CASCADE,
+
+  -- Reference to the user who authored the comment.
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+
+  -- The textual content of the comment.
+  comment_text TEXT NOT NULL CHECK (char_length(comment_text) > 0),
+
+  -- Auditing timestamps
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------------------------
+-- Column-level comments for public.comments
+-- -----------------------------------------------------------------------------
+COMMENT ON TABLE public.comments IS
+  'Comments left by users on referral_posts. Used for discussion and clarification.';
+
+COMMENT ON COLUMN public.comments.id IS
+  'Primary key (UUID) for the comment record.';
+
+COMMENT ON COLUMN public.comments.post_id IS
+  'Foreign key to public.referral_posts(id). The post this comment pertains to.';
+
+COMMENT ON COLUMN public.comments.user_id IS
+  'Foreign key to public.users(id). The user who authored the comment.';
+
+COMMENT ON COLUMN public.comments.comment_text IS
+  'Text body of the comment. Non-empty.';
+
+COMMENT ON COLUMN public.comments.created_at IS
+  'Timestamp when the comment was created (UTC). Default: now().' ;
+
+COMMENT ON COLUMN public.comments.updated_at IS
+  'Timestamp when the comment was last updated (UTC). Application should update on edits.';
+
+
+-- =============================================================================
 -- TABLE: public.likes
 -- Purpose: Records user "likes" (upvotes) for referral posts. Each record
 --          represents a single user expressing interest in a referral post.
@@ -223,7 +390,7 @@ COMMENT ON COLUMN public.likes.user_id IS
   'Foreign key to public.users(id). The user who performed the like; cascades on user deletion.';
 
 COMMENT ON COLUMN public.likes.created_at IS
-  'Creation timestamp (UTC) for the like record. Defaults to now().';
+  'Creation timestamp (UTC) for the like record. Defaults to now().' ;
 
 
 -- End of migration V1.0.0__initial_schema.sql
