@@ -531,7 +531,107 @@ COMMENT ON COLUMN public.notifications.created_at IS
   'Timestamp when the notification was created (UTC). Default: now().' ;
 
 
--- End of migration V1.0.0__initial_schema.sql
--- This file intentionally does not create additional indexes, functions,
--- triggers, or RLS policies. Subsequent migrations should add operational
--- constraints such as indexes and maintenance triggers as needed.
+-- =============================================================================
+-- Validation queries (READ-ONLY)
+-- Purpose: Run these SELECT statements to validate that the migration
+--          created the expected types, tables, and constraints. These queries
+--          are intentionally read-only and safe for production environments.
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 1) Verify ENUM types exist in public schema
+-- -----------------------------------------------------------------------------
+SELECT n.nspname AS schema_name,
+       t.typname  AS enum_type
+FROM pg_type t
+JOIN pg_namespace n ON t.typnamespace = n.oid
+WHERE t.typtype = 'e'
+  AND n.nspname = 'public'
+  AND t.typname IN ('app_role', 'post_status', 'referral_status', 'notification_type')
+ORDER BY t.typname;
+
+-- -----------------------------------------------------------------------------
+-- 2) Verify required tables exist in public schema
+-- -----------------------------------------------------------------------------
+SELECT table_schema, table_name, table_type
+FROM information_schema.tables
+WHERE table_schema = 'public'
+  AND table_name IN ('users', 'referral_posts', 'comments', 'likes', 'referral_requests', 'notifications')
+ORDER BY table_name;
+
+-- -----------------------------------------------------------------------------
+-- 3) List FOREIGN KEY constraints in public schema with referencing and referenced
+--    table/column detail. Useful to confirm ON DELETE behaviors.
+-- -----------------------------------------------------------------------------
+SELECT
+  tc.constraint_name,
+  tc.table_schema,
+  tc.table_name,
+  kcu.column_name AS referencing_column,
+  ccu.table_schema AS referenced_table_schema,
+  ccu.table_name   AS referenced_table,
+  ccu.column_name  AS referenced_column
+FROM information_schema.table_constraints AS tc
+JOIN information_schema.key_column_usage AS kcu
+  ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+JOIN information_schema.constraint_column_usage AS ccu
+  ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.table_schema
+WHERE tc.constraint_type = 'FOREIGN KEY'
+  AND tc.table_schema = 'public'
+ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position;
+
+-- -----------------------------------------------------------------------------
+-- 4) List PRIMARY KEY constraints and their columns for the target tables
+-- -----------------------------------------------------------------------------
+SELECT tc.table_schema,
+       tc.table_name,
+       tc.constraint_name,
+       string_agg(kcu.column_name, ', ' ORDER BY kcu.ordinal_position) AS pk_columns
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+  ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+WHERE tc.constraint_type = 'PRIMARY KEY'
+  AND tc.table_schema = 'public'
+  AND tc.table_name IN ('users', 'referral_posts', 'comments', 'likes', 'referral_requests', 'notifications')
+GROUP BY tc.table_schema, tc.table_name, tc.constraint_name
+ORDER BY tc.table_name;
+
+-- -----------------------------------------------------------------------------
+-- 5) List UNIQUE constraints for public schema (to verify email uniqueness and
+--    likes/referral_requests uniqueness)
+-- -----------------------------------------------------------------------------
+SELECT tc.table_schema,
+       tc.table_name,
+       tc.constraint_name,
+       string_agg(kcu.column_name, ', ' ORDER BY kcu.ordinal_position) AS unique_columns
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+  ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+WHERE tc.constraint_type = 'UNIQUE'
+  AND tc.table_schema = 'public'
+  AND tc.table_name IN ('users', 'likes', 'referral_requests')
+GROUP BY tc.table_schema, tc.table_name, tc.constraint_name
+ORDER BY tc.table_name;
+
+-- -----------------------------------------------------------------------------
+-- 6) List CHECK constraints defined on the public tables (status, non-empty text,
+--    URL/email regex checks, etc.)
+-- -----------------------------------------------------------------------------
+SELECT tc.table_schema,
+       tc.table_name,
+       cc.constraint_name,
+       cc.check_clause
+FROM information_schema.table_constraints tc
+JOIN information_schema.check_constraints cc
+  ON cc.constraint_name = tc.constraint_name AND cc.constraint_schema = tc.table_schema
+WHERE tc.constraint_type = 'CHECK'
+  AND tc.table_schema = 'public'
+  AND tc.table_name IN ('users', 'referral_posts', 'comments', 'referral_requests')
+ORDER BY tc.table_name, cc.constraint_name;
+
+-- -----------------------------------------------------------------------------
+-- End of validation queries
+-- Review the results above to confirm the migration applied the expected schema
+-- objects. These SELECT statements are read-only and safe to run against any
+-- environment (dev/staging/production).
+-- -----------------------------------------------------------------------------
