@@ -181,7 +181,52 @@ COMMENT ON COLUMN public.users.updated_at IS
   'Record last-updated timestamp (UTC). Application should update this when profile changes.';
 
 
+-- =============================================================================
+-- TABLE: public.likes
+-- Purpose: Records user "likes" (upvotes) for referral posts. Each record
+--          represents a single user expressing interest in a referral post.
+--          Enforces uniqueness on (post_id, user_id) to prevent duplicate likes.
+-- Idempotency: created only if the table does not already exist.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public.likes (
+  -- Primary identifier for the like record. Uses UUIDs consistent with other tables.
+  id UUID PRIMARY KEY,
+
+  -- Reference to the referral post that received the like. Cascades on post
+  -- deletion to remove associated likes automatically.
+  post_id UUID NOT NULL REFERENCES public.referral_posts(id) ON DELETE CASCADE,
+
+  -- Reference to the user who liked the post. Cascades on user deletion to
+  -- remove associated likes automatically.
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+
+  -- Ensure a given user can like a specific post only once.
+  CONSTRAINT likes_post_user_unique UNIQUE (post_id, user_id),
+
+  -- Timestamp when the like was created.
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------------------------
+-- Column-level comments for public.likes
+-- -----------------------------------------------------------------------------
+COMMENT ON TABLE public.likes IS
+  'Like/upvote records for referral_posts. Each row denotes that a user liked a post. Unique per (post_id,user_id).';
+
+COMMENT ON COLUMN public.likes.id IS
+  'Primary key (UUID) for the like record. Use application logic to generate or supply UUIDs.';
+
+COMMENT ON COLUMN public.likes.post_id IS
+  'Foreign key to public.referral_posts(id). The post that received the like; cascades on post deletion.';
+
+COMMENT ON COLUMN public.likes.user_id IS
+  'Foreign key to public.users(id). The user who performed the like; cascades on user deletion.';
+
+COMMENT ON COLUMN public.likes.created_at IS
+  'Creation timestamp (UTC) for the like record. Defaults to now().';
+
+
 -- End of migration V1.0.0__initial_schema.sql
--- This file intentionally does not create additional tables, indexes, functions,
--- triggers, or RLS policies. Subsequent migrations should reference these types
--- and the public.users table as needed.
+-- This file intentionally does not create additional indexes, functions,
+-- triggers, or RLS policies. Subsequent migrations should add operational
+-- constraints such as indexes and maintenance triggers as needed.
