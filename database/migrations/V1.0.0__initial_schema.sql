@@ -2,17 +2,16 @@
 ================================================================================
 PROJECT: MyReferral
 VERSION: 1.0.0
-DESCRIPTION: Initial schema migration - ENUM types, users, referral_posts, comments, and likes
+DESCRIPTION: Initial schema migration - ENUM types, users, referral_posts, comments, likes, and referral_requests
 ================================================================================
 
 PURPOSE:
   Establishes foundational PostgreSQL ENUM types required by the MyReferral
   application. This migration creates strongly-typed enumerations for user roles,
   post lifecycle states, referral request statuses, and notification categories.
-  Additionally, creates the public.users table to store application user profiles
-  synchronized from Supabase auth.users, the referral_posts table containing
-  job referral opportunities posted by employees, the comments table for
-  discussion on referral posts, and the likes table for user engagement tracking.
+  Additionally, creates application tables: public.users, public.referral_posts,
+  public.comments, public.likes, and public.referral_requests to support the
+  complete referral workflow.
 
 POSTGRESQL VERSION: 13.0+
 SUPABASE COMPATIBILITY: Full compatibility with Supabase PostgreSQL backend
@@ -27,6 +26,7 @@ NOTES:
   - referral_posts table contains job opportunities with full-text search support
   - comments table stores threaded discussions on referral posts
   - likes table tracks user engagement with referral posts
+  - referral_requests table manages the complete referral workflow
   - Future migrations will create additional tables referencing these types
 
 ================================================================================
@@ -943,6 +943,293 @@ CREATE TABLE IF NOT EXISTS public.likes (
 
 
 -- ============================================================================
+-- TABLE: public.referral_requests
+-- ============================================================================
+
+/*
+  TABLE: public.referral_requests
+  PURPOSE: Manages the complete referral workflow for job seekers
+  
+  DESCRIPTION:
+    Represents referral requests submitted by job seekers interested in 
+    opportunities posted by employees. This table tracks the entire workflow
+    from initial request submission through employee response (acceptance,
+    rejection, or cancellation). Each request links a job seeker to a specific
+    referral post and the employee who posted it.
+    
+    The table stores the applicant's message, resume URL, and the current
+    status of their referral request. The UNIQUE constraint on (post_id, requester_id)
+    ensures job seekers can only submit one referral request per job posting,
+    preventing duplicate applications.
+
+  RELATIONSHIPS:
+    - post_id : Foreign key to public.referral_posts(id)
+      The job opportunity being applied for
+    - requester_id : Foreign key to public.users(id)
+      The job seeker submitting the referral request
+    - employee_id : Foreign key to public.users(id)
+      The employee who posted the referral opportunity
+
+  CASCADE BEHAVIOR:
+    - post_id : ON DELETE CASCADE
+      When a referral post is deleted, all referral requests for it are deleted
+    - requester_id : ON DELETE CASCADE
+      When a job seeker is deleted, all their referral requests are deleted
+    - employee_id : ON DELETE CASCADE
+      When an employee is deleted, all referral requests they received are deleted
+
+  CONSTRAINTS:
+    - UNIQUE(post_id, requester_id) : Prevents duplicate applications
+      Each job seeker can only apply for a specific post once
+      Simplifies re-apply workflows (update existing vs create new)
+
+  WORKFLOW STATES:
+    - Pending   : Request submitted, awaiting employee review
+    - Accepted  : Employee approved the referral, applicant should apply
+    - Rejected  : Employee declined the referral request
+    - Cancelled : Requester or admin cancelled the request
+
+  PERFORMANCE NOTES:
+    - post_id excellent for queries: "all requests for this job"
+    - requester_id excellent for queries: "all requests by this user"
+    - employee_id excellent for queries: "all requests for this employee"
+    - status excellent for filtering: "pending requests awaiting response"
+    - UNIQUE constraint enables efficient upserts
+
+  USE CASES:
+    - Job seeker submits referral request
+    - Employee reviews pending requests
+    - Employee accepts/rejects referral
+    - Job seeker views application status
+    - Analytics: conversion by status, employee response time
+
+  AUDIT & LIFECYCLE:
+    - created_at : Immutable timestamp of request submission
+    - updated_at : Updated when status changes (Pending → Accepted/Rejected/Cancelled)
+    - status : Drives notifications and workflow automation
+*/
+CREATE TABLE IF NOT EXISTS public.referral_requests (
+  -- ========================================================================
+  -- PRIMARY KEY
+  -- ========================================================================
+  
+  /*
+    id : UUID
+    PURPOSE: Unique identifier for each referral request
+    CONSTRAINTS: PRIMARY KEY, NOT NULL
+    GENERATION: UUID v4 generated by uuid_generate_v4()
+    USAGE: Unique reference for request tracking, updates, and queries
+  */
+  id UUID PRIMARY KEY NOT NULL DEFAULT uuid_generate_v4(),
+
+  
+  -- ========================================================================
+  -- FOREIGN KEY RELATIONSHIPS
+  -- ========================================================================
+  
+  /*
+    post_id : UUID
+    PURPOSE: References the referral job posting being applied for
+    CONSTRAINTS: NOT NULL, FOREIGN KEY with ON DELETE CASCADE
+    RELATIONSHIP: References public.referral_posts(id)
+    CASCADE BEHAVIOR: When a job post is deleted, all requests for it are deleted
+    NOTES: Part of UNIQUE constraint (post_id, requester_id)
+           Enables queries for "all requests for this job"
+  */
+  post_id UUID NOT NULL REFERENCES public.referral_posts(id) ON DELETE CASCADE,
+
+  /*
+    requester_id : UUID
+    PURPOSE: Job seeker submitting the referral request
+    CONSTRAINTS: NOT NULL, FOREIGN KEY with ON DELETE CASCADE
+    RELATIONSHIP: References public.users(id)
+    CASCADE BEHAVIOR: When job seeker is deleted, their requests are deleted
+    NOTES: Part of UNIQUE constraint (post_id, requester_id)
+           Enables queries for "all requests by this user"
+  */
+  requester_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+
+  /*
+    employee_id : UUID
+    PURPOSE: Employee who posted the referral opportunity
+    CONSTRAINTS: NOT NULL, FOREIGN KEY with ON DELETE CASCADE
+    RELATIONSHIP: References public.users(id)
+    NOTES: Denormalized from referral_posts for query efficiency
+           Enables queries for "all requests sent to this employee"
+           When employee is deleted, their received requests are deleted
+  */
+  employee_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+
+
+  -- ========================================================================
+  -- REFERRAL REQUEST STATUS
+  -- ========================================================================
+  
+  /*
+    status : referral_status
+    PURPOSE: Current lifecycle state of the referral request
+    CONSTRAINTS: NOT NULL, DEFAULT 'Pending'
+    TYPE: ENUM(Pending, Accepted, Rejected, Cancelled)
+    VALUES:
+      - 'Pending'   : Request submitted, awaiting employee response
+      - 'Accepted'  : Employee approved the referral, applicant should apply
+      - 'Rejected'  : Employee declined the referral request
+      - 'Cancelled' : Requester or admin cancelled the request
+    BUSINESS_LOGIC: Controls workflow automation and notifications
+    NOTES: Changes from Pending to final state (Accepted/Rejected/Cancelled)
+           Updated via trigger when modified
+  */
+  status referral_status NOT NULL DEFAULT 'Pending',
+
+
+  -- ========================================================================
+  -- REQUEST CONTENT
+  -- ========================================================================
+  
+  /*
+    message : TEXT
+    PURPOSE: Job seeker's message to the employee with referral request
+    CONSTRAINTS: NOT NULL
+    TYPE: TEXT for flexible length
+    VALIDATION: Application should validate non-empty before insert
+    USAGE: Employee reads message when reviewing request
+    CONTENT: Typically includes motivation, relevant experience, or questions
+    EXAMPLES:
+      'I have 5 years of experience with Python and AWS. Very interested!'
+      'My profile matches your requirements. Please review my resume.'
+      'I would love to work with your team on this opportunity.'
+    NOTES: Consider markdown support or sanitization at application level
+  */
+  message TEXT NOT NULL,
+
+  /*
+    resume_url : TEXT
+    PURPOSE: URL to job seeker's resume document
+    CONSTRAINTS: NOT NULL
+    TYPE: TEXT to accommodate full URLs with protocols and query params
+    VALIDATION: Should be valid HTTP(S) URL or cloud storage URL
+    USAGE: Employee downloads or views applicant's resume
+    EXAMPLES:
+      'https://storage.example.com/resumes/user-uuid.pdf'
+      'https://drive.google.com/file/d/...'
+      's3://my-bucket/resumes/user-uuid.pdf'
+    NOTES: Consider external storage (S3/CDN) for scalability
+           Assume URL is accessible to authenticated users
+  */
+  resume_url TEXT NOT NULL,
+
+
+  -- ========================================================================
+  -- TEMPORAL METADATA
+  -- ========================================================================
+  
+  /*
+    created_at : TIMESTAMPTZ
+    PURPOSE: Timestamp of referral request submission
+    CONSTRAINTS: NOT NULL, DEFAULT NOW()
+    TYPE: TIMESTAMPTZ (timestamp with time zone)
+    AUTO-SET: Database sets value to current timestamp on insert
+    USAGE: Audit trail, request age, sorting by oldest/newest
+           Analytics: employee response time (updated_at - created_at)
+    NOTES: Immutable after creation
+  */
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  /*
+    updated_at : TIMESTAMPTZ
+    PURPOSE: Timestamp of last request modification
+    CONSTRAINTS: NOT NULL, DEFAULT NOW()
+    TYPE: TIMESTAMPTZ (timestamp with time zone)
+    AUTO-SET: Database sets value to current timestamp on insert
+    NOTES: Should be updated by trigger when status changes
+    USAGE: Track when employee responded (time-to-response metric)
+           Updated when status transitions: Pending → Accepted/Rejected/Cancelled
+  */
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  
+  -- ========================================================================
+  -- UNIQUENESS CONSTRAINT
+  -- ========================================================================
+  
+  /*
+    UNIQUE CONSTRAINT: (post_id, requester_id)
+    PURPOSE: Ensures each job seeker can only submit one request per job posting
+    BUSINESS_LOGIC: Prevents duplicate applications and data redundancy
+    USAGE: Enables efficient re-application workflows
+    BENEFITS:
+      - Database-level prevention of duplicate requests
+      - Simplifies application logic (update existing vs create new)
+      - Supports efficient INSERT ... ON CONFLICT DO UPDATE for reapply
+    EXAMPLE UPSERT (reapply with updated resume):
+      INSERT INTO public.referral_requests 
+        (post_id, requester_id, employee_id, message, resume_url, status)
+      VALUES ('post-uuid', 'user-uuid', 'emp-uuid', 'Updated message', 'new-resume-url', 'Pending')
+      ON CONFLICT (post_id, requester_id) 
+      DO UPDATE SET 
+        message = EXCLUDED.message,
+        resume_url = EXCLUDED.resume_url,
+        status = 'Pending',
+        updated_at = NOW();
+  */
+  UNIQUE(post_id, requester_id)
+);
+
+/*
+  TABLE CREATION COMPLETE: public.referral_requests
+  
+  CONSTRAINTS SUMMARY:
+    ✓ Primary Key: id (UUID)
+    ✓ Foreign Keys: 
+      - post_id → public.referral_posts(id) ON DELETE CASCADE
+      - requester_id → public.users(id) ON DELETE CASCADE
+      - employee_id → public.users(id) ON DELETE CASCADE
+    ✓ Unique Constraint: (post_id, requester_id)
+    ✓ NOT NULL: All columns are NOT NULL
+    ✓ Default Status: 'Pending'
+    ✓ Timestamps: created_at and updated_at for audit trail
+  
+  EXAMPLE QUERIES:
+    -- Get all pending requests for a job
+    SELECT * FROM public.referral_requests 
+    WHERE post_id = 'post-uuid' AND status = 'Pending'
+    ORDER BY created_at DESC;
+    
+    -- Get all requests by a job seeker
+    SELECT * FROM public.referral_requests 
+    WHERE requester_id = 'user-uuid'
+    ORDER BY created_at DESC;
+    
+    -- Get all requests received by an employee
+    SELECT * FROM public.referral_requests 
+    WHERE employee_id = 'emp-uuid' AND status = 'Pending'
+    ORDER BY created_at DESC;
+    
+    -- Get employee response time (analytics)
+    SELECT 
+      DATE_TRUNC('day', updated_at - created_at) AS response_time,
+      COUNT(*) 
+    FROM public.referral_requests 
+    WHERE status IN ('Accepted', 'Rejected')
+    GROUP BY DATE_TRUNC('day', updated_at - created_at);
+    
+    -- Check if user already applied for this job
+    SELECT EXISTS(
+      SELECT 1 FROM public.referral_requests 
+      WHERE post_id = 'post-uuid' AND requester_id = 'user-uuid'
+    );
+  
+  NEXT STEPS:
+    - Create trigger to auto-update updated_at on status change
+    - Create indexes on post_id for job request queries
+    - Create indexes on employee_id for employee inbox queries
+    - Create indexes on requester_id for user application history
+    - Create indexes on status for filtering pending requests
+    - Set up row-level security (RLS) policies
+*/
+
+
+-- ============================================================================
 -- MIGRATION COMPLETE
 -- ============================================================================
 
@@ -951,7 +1238,7 @@ CREATE TABLE IF NOT EXISTS public.likes (
   
   OBJECTS CREATED:
     - 4 ENUM types (app_role, post_status, referral_status, notification_type)
-    - 4 tables (public.users, public.referral_posts, public.comments, public.likes)
+    - 5 tables (public.users, public.referral_posts, public.comments, public.likes, public.referral_requests)
   
   RELATIONSHIPS:
     - public.referral_posts.user_id → public.users(id) [ON DELETE CASCADE]
@@ -959,17 +1246,22 @@ CREATE TABLE IF NOT EXISTS public.likes (
     - public.comments.user_id → public.users(id) [ON DELETE CASCADE]
     - public.likes.post_id → public.referral_posts(id) [ON DELETE CASCADE]
     - public.likes.user_id → public.users(id) [ON DELETE CASCADE]
+    - public.referral_requests.post_id → public.referral_posts(id) [ON DELETE CASCADE]
+    - public.referral_requests.requester_id → public.users(id) [ON DELETE CASCADE]
+    - public.referral_requests.employee_id → public.users(id) [ON DELETE CASCADE]
   
   CONSTRAINTS:
     - public.likes has UNIQUE(post_id, user_id) for duplicate prevention
+    - public.referral_requests has UNIQUE(post_id, requester_id) for duplicate prevention
   
   NEXT STEPS: 
-    - Run V1.1.0 migration to create referral_requests table
-    - Run V1.2.0 migration to create notifications table
+    - Run V1.1.0 migration to create notifications table
     - Apply database triggers for audit logging and timestamp updates
     - Apply row-level security (RLS) policies for Supabase
+    - Create indexes for query optimization
   
   ROLLBACK: 
+    - Drop public.referral_requests table (IF EXISTS)
     - Drop public.likes table (IF EXISTS)
     - Drop public.comments table (IF EXISTS)
     - Drop public.referral_posts table (IF EXISTS)
