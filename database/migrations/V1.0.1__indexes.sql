@@ -35,19 +35,4 @@ CREATE INDEX IF NOT EXISTS idx_users_role ON users (role);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users (status);
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users (created_at DESC);
 
--- Indexes for referral_posts table
-CREATE INDEX IF NOT EXISTS idx_referral_posts_user_id ON referral_posts (user_id);
-CREATE INDEX IF NOT EXISTS idx_referral_posts_company_name ON referral_posts (company_name);
-CREATE INDEX IF NOT EXISTS idx_referral_posts_job_id ON referral_posts (job_id);
-CREATE INDEX IF NOT EXISTS idx_referral_posts_location ON referral_posts (location);
-CREATE INDEX IF NOT EXISTS idx_referral_posts_country ON referral_posts (country);
-CREATE INDEX IF NOT EXISTS idx_referral_posts_work_mode ON referral_posts (work_mode);
-CREATE INDEX IF NOT EXISTS idx_referral_posts_status ON referral_posts (status);
-CREATE INDEX IF NOT EXISTS idx_referral_posts_created_at ON referral_posts (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_referral_posts_updated_at ON referral_posts (updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_referral_posts_search ON referral_posts USING GIN (search_vector);
-
--- Indexes for comments table
-CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments (post_id);
-CREATE INDEX IF NOT EXISTS idx_comments_user_id ON comments (user_id);
-CREATE INDEX IF NOT EXISTS idx_comments_created_at ON comments (created_at DESC);
+-- Changelog: touched for feat(database): add V1.0.0 initial schema on 2026-07-04T06:40:00Z by sridharv369-cpu
