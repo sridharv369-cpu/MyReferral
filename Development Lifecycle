@@ -1,0 +1,34 @@
+Business Requirement
+        │
+        ▼
+Product Requirement (PRD)
+        │
+        ▼
+Architecture Design
+        │
+        ▼
+Database Design
+        │
+        ▼
+UI/UX Design
+        │
+        ▼
+Frontend Development
+        │
+        ▼
+Backend Development
+        │
+        ▼
+Authentication
+        │
+        ▼
+Testing
+        │
+        ▼
+Code Review
+        │
+        ▼
+Deployment
+        │
+        ▼
+Production
